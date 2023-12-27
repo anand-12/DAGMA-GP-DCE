@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 from .locally_connected import LocallyConnected
 import abc
 import typing
-
+import gpytorch
 
 class Dagma_DCE_Module(nn.Module, abc.ABC):
     @abc.abstractmethod
@@ -277,6 +277,111 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
         W = torch.sqrt(torch.mean(observed_deriv**2, axis=0).T)
 
         return W, observed_deriv
+
+    def h_func(self, W: torch.Tensor, s: float = 1.0) -> torch.Tensor:
+        """Calculate the DAGMA constraint function
+
+        Args:
+            W (torch.Tensor): adjacency matrix
+            s (float, optional): hyperparameter for the DAGMA constraint,
+                can be any positive number. Defaults to 1.0.
+
+        Returns:
+            torch.Tensor: constraint
+        """
+        h = -torch.slogdet(s * self.I - W * W)[1] + self.d * np.log(s)
+
+        return h
+
+    def get_l1_reg(self, observed_derivs: torch.Tensor) -> torch.Tensor:
+        """Gets the L1 regularization
+
+        Args:
+            observed_derivs (torch.Tensor): the batched Jacobian matrix
+
+        Returns:
+            torch.Tensor: _description_
+        """
+        return torch.sum(torch.abs(torch.mean(observed_derivs, axis=0)))
+
+class DagmaGP_DCE(Dagma_DCE_Module):
+
+    def __init__(self, input_dim, likelihood, kernel=None):
+        """
+        Initializes the DagmaGP_DCE module
+
+        Args:
+            input_dim (int): The number of input dimensions.
+            likelihood (gpytorch.likelihoods.Likelihood): GP likelihood function.
+            kernel (gpytorch.kernels.Kernel, optional): GP kernel. If None, a default kernel is used.
+        """
+        super(DagmaGP_DCE, self).__init__()
+
+        self.gp = gpytorch.models.ExactGP(gpytorch.likelihoods.GaussianLikelihood(), input_dim, likelihood)
+
+        if kernel is None:
+            self.gp.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+        else:
+            self.gp.covar_module = kernel
+
+        self.gp.mean_module = gpytorch.means.ConstantMean()
+
+    def forward(self, x):
+        """
+        forward pass of the GP. should just be the predictive distribution
+        
+        Args:
+            x (torch.Tensor): Input tensor.
+        """
+        gp_pred = self.gp(x) # just doing exact inference for now
+        return gp_pred
+    
+
+    
+    def get_graph(self, x):
+        """
+        Get the adjaceny matrix defined by the DCE and the batched Jacobians of GP
+
+        Args:
+            x (torch.Tensor): input
+
+        Returns:
+            torch.Tensor, torch.Tensor: the weighted graph and batched Jacobian
+        """
+        # same as MLP
+        # x = x.requires_grad_(True)
+        x_dummy = x.detach().requires_grad_()
+
+        # self.forward from MLP
+        with gpytorch.settings.fast_pred_var():
+            pred = self(x_dummy)
+
+        # mean derivative
+        mean = pred.mean
+        mean_derivatives = torch.autograd.grad(outputs=mean, inputs=x_dummy,
+                                            grad_outputs=torch.ones_like(mean),
+                                            create_graph=True, retain_graph=True, only_inputs=True)[0]
+
+        # cov. jacobians
+        covar_matrix = self.gp.covar_module(x_dummy).evaluate()
+        covar_jacobian = torch.zeros(*x_dummy.shape[:-1], *covar_matrix.shape)
+
+        for i in range(x_dummy.size(0)):
+            grad_outputs = torch.zeros_like(covar_matrix)
+            grad_outputs[:, i] = 1  # i-th input
+            covar_jacobian[i] = torch.autograd.grad(outputs=covar_matrix, inputs=x,
+                                                    grad_outputs=grad_outputs,
+                                                    retain_graph=True,
+                                                    create_graph=True,
+                                                    only_inputs=True)[0]
+
+        # batched derivatives
+        combined_derivatives = torch.cat([mean_derivatives.unsqueeze(0), covar_jacobian], dim=0)
+
+        # RMS calculation for the adjacency matrix
+        W = torch.sqrt(torch.mean(combined_derivatives**2, dim=(0, 1)))
+
+        return W, combined_derivatives
 
     def h_func(self, W: torch.Tensor, s: float = 1.0) -> torch.Tensor:
         """Calculate the DAGMA constraint function
