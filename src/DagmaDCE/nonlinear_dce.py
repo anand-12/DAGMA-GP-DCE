@@ -395,14 +395,15 @@ class DagmaGP_DCE(Dagma_DCE_Module):
             torch.Tensor, torch.Tensor: the weighted graph and batched Jacobian
         """
 
-        x = x.requires_grad_(True)
+        # x = x.requires_grad_(True)
+        x_dummy = x.detach().requires_grad_()
 
         lengthscale = self.gp.covar_module.base_kernel.lengthscale
 
         mean_derivatives = torch.zeros_like(x)
 
-        x1 = x.unsqueeze(1)  
-        x2 = x.unsqueeze(0)  
+        x1 = x_dummy.unsqueeze(1)  
+        x2 = x_dummy.unsqueeze(0)  
         scaled_diff = (x1 - x2) / lengthscale**2
 
         rbf_matrix = torch.exp(-torch.sum(scaled_diff ** 2, dim=2) / 2)
