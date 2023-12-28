@@ -382,6 +382,42 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         W = torch.sqrt(torch.mean(combined_derivatives**2, dim=(0, 1)))
 
         return W, combined_derivatives
+    
+    def get_graph_rbf(self, x):
+        """
+        Get the adjacency matrix defined by the DCE and the batched Jacobians of GP
+        assuming an RBF kernel and constant mean.
+
+        Args:
+            x (torch.Tensor): input
+
+        Returns:
+            torch.Tensor, torch.Tensor: the weighted graph and batched Jacobian
+        """
+
+        x = x.requires_grad_(True)
+
+        lengthscale = self.gp.covar_module.base_kernel.lengthscale
+
+        mean_derivatives = torch.zeros_like(x)
+
+        x1 = x.unsqueeze(1)  
+        x2 = x.unsqueeze(0)  
+        scaled_diff = (x1 - x2) / lengthscale**2
+
+        rbf_matrix = torch.exp(-torch.sum(scaled_diff ** 2, dim=2) / 2)
+
+        covar_derivative = -scaled_diff * rbf_matrix.unsqueeze(-1)
+        covar_jacobian = covar_derivative.sum(dim=-1) 
+
+        combined_derivatives = torch.cat([mean_derivatives.unsqueeze(0), covar_jacobian], dim=0)
+
+        # RMS calculation for the adjacency matrix
+        W = torch.sqrt(torch.mean(combined_derivatives**2, dim=(0, 1)))
+
+        return W, combined_derivatives
+
+
 
     def h_func(self, W: torch.Tensor, s: float = 1.0) -> torch.Tensor:
         """Calculate the DAGMA constraint function
