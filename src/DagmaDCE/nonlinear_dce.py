@@ -246,6 +246,7 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
         Returns:
             torch.Tensor: output
         """
+        
         x = self.fc1(x)
 
         x = x.view(-1, self.dims[0], self.dims[1])
@@ -268,7 +269,9 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
             torch.Tensor, torch.Tensor: the weighted graph and batched Jacobian
         """
         x_dummy = x.detach().requires_grad_()
-
+        print(f"x_dummy's shape is: {x_dummy.shape}")
+        print(f"x_dummy's dtype is: {x_dummy.dtype}")
+        # print(f"x_dummy's ")
         observed_deriv = torch.func.vmap(torch.func.jacrev(self.forward))(x_dummy).view(
             -1, self.d, self.d
         )
@@ -306,7 +309,7 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
 
 class DagmaGP_DCE(Dagma_DCE_Module):
 
-    def __init__(self, input_dim, likelihood, kernel=None):
+    def __init__(self, train_x, train_y, likelihood, kernel=None):
         """
         Initializes the DagmaGP_DCE module
 
@@ -317,7 +320,7 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         """
         super(DagmaGP_DCE, self).__init__()
 
-        self.gp = gpytorch.models.ExactGP(gpytorch.likelihoods.GaussianLikelihood(), input_dim, likelihood)
+        self.gp = gpytorch.models.ExactGP(train_x, train_y, likelihood)
 
         if kernel is None:
             self.gp.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())

@@ -1,5 +1,5 @@
 from DagmaDCE import utils, nonlinear, nonlinear_dce
-import torch
+import torch, gpytorch
 import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -49,12 +49,15 @@ print('[R^2 Sort Regress Results] SHD:',
       acc_var_sort_regress['shd'], '| SID:', sid_var_sort_regress, '| F1:', acc_var_sort_regress['f1'])
 
 X = torch.from_numpy(X).to(device)
-
+print(f"X shape: {X.shape}")
+print(f"B_true shape: {B_true.shape}")
 ######################################
 ####### Do DAGMA-DCE Discovery #######
 ######################################
 print('\n>>> Performing DAGMA-DCE discovery <<<')
-eq_model = nonlinear_dce.DagmaMLP_DCE(dims=[d, 10, 1], bias=True).to(device)
+# eq_model = nonlinear_dce.DagmaMLP_DCE(dims=[d, 10, 1], bias=True).to(device)
+# eq_model = nonlinear_dce.DagmaGP_DCE(X, B_true, likelihood = gpytorch.likelihoods.GaussianLikelihood()).to(device)
+eq_model = nonlinear_dce.DagmaGP_DCE(X, B_true, likelihood = gpytorch.likelihoods.GaussianLikelihood())
 model = nonlinear_dce.DagmaDCE(eq_model)
 
 time_start = time.time()
