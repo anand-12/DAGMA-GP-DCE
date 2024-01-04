@@ -41,10 +41,12 @@ class DagmaDCE:
         self.model = model
         self.loss = self.mse_loss if use_mse_loss else self.log_mse_loss
 
+
     def mse_loss(self, output: torch.Tensor, target: torch.Tensor):
         """Computes the MSE loss sum (output - target)^2 / (2N)"""
         n, d = target.shape
         return 0.5 / n * torch.sum((output - target) ** 2)
+
 
     def log_mse_loss(self, output: torch.Tensor, target: torch.Tensor):
         """Computes the MSE loss d / 2 * log [sum (output - target)^2 / N ]"""
@@ -97,7 +99,9 @@ class DagmaDCE:
             optimizer.zero_grad()
 
             if i == 0:
-                X_hat = self.model(self.X)
+                # X_hat = self.model(self.X)
+                X_hat = self.model(self.X).mean  # Extract mean from MultivariateNormal
+                # print(f"X_hat's shape is: {X_hat.shape}")
                 score = self.loss(X_hat, self.X)
                 obj = score
 
@@ -109,7 +113,8 @@ class DagmaDCE:
                 if h_val.item() < 0:
                     return False
 
-                X_hat = self.model(self.X)
+                # X_hat = self.model(self.X)
+                X_hat = self.model(self.X).mean  # Extract mean from MultivariateNormal
                 score = self.mse_loss(X_hat, self.X)
 
                 l1_reg = lambda1 * self.model.get_l1_reg(observed_derivs)
@@ -224,6 +229,8 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
         assert dims[-1] == 1
 
         self.dims, self.d = dims, dims[0]
+        # print(f"dims is: {dims}")
+        # print(f"d is: {self.d}")
         self.I = torch.eye(self.d)
 
         self.fc1 = nn.Linear(self.d, self.d * dims[1], bias=bias)
@@ -269,13 +276,13 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
             torch.Tensor, torch.Tensor: the weighted graph and batched Jacobian
         """
         x_dummy = x.detach().requires_grad_()
-        print(f"x_dummy's shape is: {x_dummy.shape}")
-        print(f"x_dummy's dtype is: {x_dummy.dtype}")
+        # print(f"x_dummy's shape is: {x_dummy.shape}")
+
         # print(f"x_dummy's ")
         observed_deriv = torch.func.vmap(torch.func.jacrev(self.forward))(x_dummy).view(
             -1, self.d, self.d
         )
-
+        # print(f"observed_deriv's shape is: {observed_deriv.shape}")
         # Adjacency matrix is RMS Jacobian
         W = torch.sqrt(torch.mean(observed_deriv**2, axis=0).T)
 
@@ -292,7 +299,14 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
         Returns:
             torch.Tensor: constraint
         """
+        # print(f"shape of W is: {W.shape}")
+        # print(f"shape of W*W is: {(W*W).shape}")
+        # print(f"shape of self.I is: {self.I.shape}")
+
         h = -torch.slogdet(s * self.I - W * W)[1] + self.d * np.log(s)
+
+        # print(f"type of I is: {type(self.I)}")
+        # print(f"type of W is: {type(W)}")
 
         return h
 
@@ -308,85 +322,28 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
         return torch.sum(torch.abs(torch.mean(observed_derivs, axis=0)))
 
 class DagmaGP_DCE(Dagma_DCE_Module):
-
-    def __init__(self, train_x, train_y, likelihood, kernel=None):
-        """
-        Initializes the DagmaGP_DCE module
-
-        Args:
-            input_dim (int): The number of input dimensions.
-            likelihood (gpytorch.likelihoods.Likelihood): GP likelihood function.
-            kernel (gpytorch.kernels.Kernel, optional): GP kernel. If None, a default kernel is used.
-        """
+    def __init__(self, train_x, train_y, likelihood):
         super(DagmaGP_DCE, self).__init__()
-
+        
+        # Initialize the GP model with mean and covariance modules
         self.gp = gpytorch.models.ExactGP(train_x, train_y, likelihood)
-
-        if kernel is None:
-            self.gp.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
-        else:
-            self.gp.covar_module = kernel
-
-        self.gp.mean_module = gpytorch.means.ConstantMean()
+        self.gp.mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([10]))
+        self.gp.covar_module = gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([10])),
+            batch_shape=torch.Size([10])
+        )
+        n, d = train_x.shape
+        self.I = torch.eye(d)
+        self.d = 10
 
     def forward(self, x):
-        """
-        forward pass of the GP. should just be the predictive distribution
-        
-        Args:
-            x (torch.Tensor): Input tensor.
-        """
-        gp_pred = self.gp(x) # just doing exact inference for now
-        return gp_pred
-    
-
+        mean_x = self.gp.mean_module(x)
+        covar_x = self.gp.covar_module(x)
+        return gpytorch.distributions.MultitaskMultivariateNormal.from_batch_mvn(
+            gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+        )
     
     def get_graph(self, x):
-        """
-        Get the adjaceny matrix defined by the DCE and the batched Jacobians of GP
-
-        Args:
-            x (torch.Tensor): input
-
-        Returns:
-            torch.Tensor, torch.Tensor: the weighted graph and batched Jacobian
-        """
-        # same as MLP
-        # x = x.requires_grad_(True)
-        x_dummy = x.detach().requires_grad_()
-
-        # self.forward from MLP
-        with gpytorch.settings.fast_pred_var():
-            pred = self(x_dummy)
-
-        # mean derivative
-        mean = pred.mean
-        mean_derivatives = torch.autograd.grad(outputs=mean, inputs=x_dummy,
-                                            grad_outputs=torch.ones_like(mean),
-                                            create_graph=True, retain_graph=True, only_inputs=True)[0]
-
-        # cov. jacobians
-        covar_matrix = self.gp.covar_module(x_dummy).evaluate()
-        covar_jacobian = torch.zeros(*x_dummy.shape[:-1], *covar_matrix.shape)
-
-        for i in range(x_dummy.size(0)):
-            grad_outputs = torch.zeros_like(covar_matrix)
-            grad_outputs[:, i] = 1  # i-th input
-            covar_jacobian[i] = torch.autograd.grad(outputs=covar_matrix, inputs=x,
-                                                    grad_outputs=grad_outputs,
-                                                    retain_graph=True,
-                                                    create_graph=True,
-                                                    only_inputs=True)[0]
-
-        # batched derivatives
-        combined_derivatives = torch.cat([mean_derivatives.unsqueeze(0), covar_jacobian], dim=0)
-
-        # RMS calculation for the adjacency matrix
-        W = torch.sqrt(torch.mean(combined_derivatives**2, dim=(0, 1)))
-
-        return W, combined_derivatives
-    
-    def get_graph_rbf(self, x):
         """
         Get the adjacency matrix defined by the DCE and the batched Jacobians of GP
         assuming an RBF kernel and constant mean.
@@ -402,22 +359,35 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         x_dummy = x.detach().requires_grad_()
 
         lengthscale = self.gp.covar_module.base_kernel.lengthscale
+        temp_lengthscale = lengthscale.squeeze().unsqueeze(0)
+        expanded_lengthscale = temp_lengthscale.unsqueeze(2)
 
-        mean_derivatives = torch.zeros_like(x)
 
-        x1 = x_dummy.unsqueeze(1)  
-        x2 = x_dummy.unsqueeze(0)  
-        scaled_diff = (x1 - x2) / lengthscale**2
+        mean_derivatives = torch.zeros_like(x_dummy)
+        expanded_mean_derivatives = mean_derivatives.unsqueeze(2).repeat(1, 1, 10)  # New shape: [1000, 10, 10]
+        n, d = x_dummy.shape
 
-        rbf_matrix = torch.exp(-torch.sum(scaled_diff ** 2, dim=2) / 2)
+        # Expand x_dummy to [n, 1, d] to represent each point
+        # x1 = x_dummy.unsqueeze(1)  # Shape: [n, 1, d]
+        # x2 = x_dummy.unsqueeze(0)  # Shape: [1, n, d]
+        x1 = x_dummy.unsqueeze(2).repeat(1, 1, d)  # Shape: [1000, 10, 10]
+        x2 = x_dummy.repeat(1, d).view(n, d, d).transpose(1, 2)  # Shape: [1000, 10, 10]
+        scaled_diff = (x1 - x2) / expanded_lengthscale**2
+        squared_diff = scaled_diff ** 2  # Shape: [1000, 10, 10]
+        rbf_matrix = torch.exp(-squared_diff / 2)  # Shape: [1000, 10, 10]
+        # covar_derivative = -scaled_diff * rbf_matrix.unsqueeze(-1)
+        covar_derivative = -scaled_diff * rbf_matrix
+        # covar_jacobian = covar_derivative.sum(dim=-1) 
 
-        covar_derivative = -scaled_diff * rbf_matrix.unsqueeze(-1)
-        covar_jacobian = covar_derivative.sum(dim=-1) 
-
-        combined_derivatives = torch.cat([mean_derivatives.unsqueeze(0), covar_jacobian], dim=0)
+        
+        # combined_derivatives = torch.cat([mean_derivatives.unsqueeze(0), covar_jacobian], dim=0)
+        combined_derivatives = torch.cat([expanded_mean_derivatives, covar_derivative], dim=0)
 
         # RMS calculation for the adjacency matrix
-        W = torch.sqrt(torch.mean(combined_derivatives**2, dim=(0, 1)))
+        # RMS of just mean derivatives
+        # print(f"shape of combined_derivatives is: {combined_derivatives.shape}")
+        W = torch.sqrt(torch.mean(combined_derivatives**2, dim=0))  # Shape: [10, 10]
+        W = W.T
 
         return W, combined_derivatives
 
@@ -434,7 +404,14 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         Returns:
             torch.Tensor: constraint
         """
+        # print(f"shape of W is: {W.shape}")
+        # print(f"shape of W*W is: {(W*W).shape}")
+        # print(f"shape of self.I is: {self.I.shape}")
+        # print(f"type of I is: {type(self.I)}")
+        # print(f"type of W is: {type(W)}")
         h = -torch.slogdet(s * self.I - W * W)[1] + self.d * np.log(s)
+
+
 
         return h
 
@@ -448,3 +425,77 @@ class DagmaGP_DCE(Dagma_DCE_Module):
             torch.Tensor: _description_
         """
         return torch.sum(torch.abs(torch.mean(observed_derivs, axis=0)))
+    
+
+    # def __init__(self, train_x, train_y, likelihood, kernel=None):
+    #     """
+    #     Initializes the DagmaGP_DCE module
+
+    #     Args:
+    #         input_dim (int): The number of input dimensions.
+    #         likelihood (gpytorch.likelihoods.Likelihood): GP likelihood function.
+    #         kernel (gpytorch.kernels.Kernel, optional): GP kernel. If None, a default kernel is used.
+    #     """
+    #     super(DagmaGP_DCE, self).__init__()
+
+    #     # check batch size args for multioutput GP
+    #     self.gp = gpytorch.models.ExactGP(train_x, train_y, likelihood)
+    #     # check approximate GPs
+
+    #     if kernel is None:
+    #         self.gp.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+    #     else:
+    #         self.gp.covar_module = kernel
+
+    #     self.gp.mean_module = gpytorch.means.ConstantMean()
+
+    # def forward(self, x):
+    #     mean_x = self.gp.mean_module(x)
+    #     covar_x = self.gp.covar_module(x)
+    #     return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
+
+    
+    # def get_graph_common(self, x):
+    #     """
+    #     Get the adjaceny matrix defined by the DCE and the batched Jacobians of GP
+
+    #     Args:
+    #         x (torch.Tensor): input
+
+    #     Returns:
+    #         torch.Tensor, torch.Tensor: the weighted graph and batched Jacobian
+    #     """
+    #     # same as MLP
+    #     # x = x.requires_grad_(True)
+    #     x_dummy = x.detach().requires_grad_()
+
+    #     # self.forward from MLP
+    #     with gpytorch.settings.fast_pred_var():
+    #         pred = self(x_dummy)
+
+    #     # mean derivative
+    #     mean = pred.mean
+    #     mean_derivatives = torch.autograd.grad(outputs=mean, inputs=x_dummy,
+    #                                         grad_outputs=torch.ones_like(mean),
+    #                                         create_graph=True, retain_graph=True, only_inputs=True)[0]
+
+    #     # cov. jacobians
+    #     covar_matrix = self.gp.covar_module(x_dummy).evaluate()
+    #     covar_jacobian = torch.zeros(*x_dummy.shape[:-1], *covar_matrix.shape)
+
+    #     for i in range(x_dummy.size(0)):
+    #         grad_outputs = torch.zeros_like(covar_matrix)
+    #         grad_outputs[:, i] = 1  # i-th input
+    #         covar_jacobian[i] = torch.autograd.grad(outputs=covar_matrix, inputs=x,
+    #                                                 grad_outputs=grad_outputs,
+    #                                                 retain_graph=True,
+    #                                                 create_graph=True,
+    #                                                 only_inputs=True)[0]
+
+    #     # batched derivatives
+    #     combined_derivatives = torch.cat([mean_derivatives.unsqueeze(0), covar_jacobian], dim=0)
+
+    #     # RMS calculation for the adjacency matrix
+    #     W = torch.sqrt(torch.mean(combined_derivatives**2, dim=(0, 1)))
+
+    #     return W, combined_derivatives
