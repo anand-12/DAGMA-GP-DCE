@@ -307,6 +307,8 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
 
         # print(f"type of I is: {type(self.I)}")
         # print(f"type of W is: {type(W)}")
+        print(f"shape of h is: {h.shape}")
+        print(f"h is: {h}")
 
         return h
 
@@ -359,19 +361,19 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         x_dummy = x.detach().requires_grad_()
 
         lengthscale = self.gp.covar_module.base_kernel.lengthscale
-        temp_lengthscale = lengthscale.squeeze().unsqueeze(0)
-        expanded_lengthscale = temp_lengthscale.unsqueeze(2)
+        expanded_lengthscale = lengthscale.expand(-1, 1000, 1000).permute(1, 2, 0) 
 
-
-        mean_derivatives = torch.zeros_like(x_dummy)
-        expanded_mean_derivatives = mean_derivatives.unsqueeze(2).repeat(1, 1, 10)  # New shape: [1000, 10, 10]
         n, d = x_dummy.shape
-
+        mean_derivatives = torch.zeros((n, n))
         # Expand x_dummy to [n, 1, d] to represent each point
-        # x1 = x_dummy.unsqueeze(1)  # Shape: [n, 1, d]
-        # x2 = x_dummy.unsqueeze(0)  # Shape: [1, n, d]
-        x1 = x_dummy.unsqueeze(2).repeat(1, 1, d)  # Shape: [1000, 10, 10]
-        x2 = x_dummy.repeat(1, d).view(n, d, d).transpose(1, 2)  # Shape: [1000, 10, 10]
+        x1 = x_dummy.unsqueeze(1)  # Shape: [n, 1, d]
+        x2 = x_dummy.unsqueeze(0)  # Shape: [1, n, d]
+        # x1 = x_dummy.unsqueeze(2).repeat(1, 1, d)  # Shape: [1000, 10, 10]
+        # x2 = x_dummy.repeat(1, d).view(n, d, d).transpose(1, 2)  # Shape: [1000, 10, 10]
+        print(f"Shape of x1-x2 is: {(x1-x2).shape}")
+
+        print(f"Shape of lengthscale is: {lengthscale.shape}")
+        print(f"Shape of expanded_lengthscale is: {expanded_lengthscale.shape}")
         scaled_diff = (x1 - x2) / expanded_lengthscale**2
         squared_diff = scaled_diff ** 2  # Shape: [1000, 10, 10]
         rbf_matrix = torch.exp(-squared_diff / 2)  # Shape: [1000, 10, 10]
@@ -379,16 +381,19 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         covar_derivative = -scaled_diff * rbf_matrix
         # covar_jacobian = covar_derivative.sum(dim=-1) 
 
-        
+        print(f"Shape of covar_derivative is: {covar_derivative.shape}")
+        # print(f"Shape of covar_jacobian is: {covar_jacobian.shape}")
+        print(f"Shape of mean_derivatives is: {mean_derivatives.shape}")
         # combined_derivatives = torch.cat([mean_derivatives.unsqueeze(0), covar_jacobian], dim=0)
-        combined_derivatives = torch.cat([expanded_mean_derivatives, covar_derivative], dim=0)
-
+        # combined_derivatives = torch.cat([mean_derivatives, covar_jacobian], dim=0)
+        combined_derivatives = covar_derivative
+        # print(f"Shape of combined_derivatives is: {combined_derivatives.shape}")
         # RMS calculation for the adjacency matrix
         # RMS of just mean derivatives
-        # print(f"shape of combined_derivatives is: {combined_derivatives.shape}")
-        W = torch.sqrt(torch.mean(combined_derivatives**2, dim=0))  # Shape: [10, 10]
-        W = W.T
+        W = torch.sqrt(torch.mean(combined_derivatives**2, dim=0))
+        print(f"Shape of W is: {W.shape}")
 
+        
         return W, combined_derivatives
 
 
@@ -404,12 +409,12 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         Returns:
             torch.Tensor: constraint
         """
-        # print(f"shape of W is: {W.shape}")
-        # print(f"shape of W*W is: {(W*W).shape}")
-        # print(f"shape of self.I is: {self.I.shape}")
-        # print(f"type of I is: {type(self.I)}")
-        # print(f"type of W is: {type(W)}")
-        h = -torch.slogdet(s * self.I - W * W)[1] + self.d * np.log(s)
+        print(f"shape of W is: {W.shape}")
+        print(f"shape of W.T*W is: {W.T*W.shape}")
+        print(f"shape of self.I is: {self.I.shape}")
+        print(f"type of I is: {type(self.I)}")
+        print(f"type of W is: {type(W)}")
+        h = -torch.slogdet(s * self.I - W.T * W)[1] + self.d * np.log(s)
 
 
 
