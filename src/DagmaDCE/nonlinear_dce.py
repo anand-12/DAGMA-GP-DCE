@@ -45,7 +45,13 @@ class DagmaDCE:
     def mse_loss(self, output: torch.Tensor, target: torch.Tensor):
         """Computes the MSE loss sum (output - target)^2 / (2N)"""
         n, d = target.shape
-        return 0.5 / n * torch.sum((output - target) ** 2)
+        if isinstance(output, torch.distributions.MultivariateNormal):
+            output_mean = output.mean
+        else:
+            output_mean = output
+        # print(f"output's type is: {type(output)}")
+        # print(f"target's type is: {type(target)}")
+        return 0.5 / n * torch.sum((output_mean - target) ** 2)
 
 
     def log_mse_loss(self, output: torch.Tensor, target: torch.Tensor):
@@ -327,15 +333,23 @@ class DagmaGP_DCE(Dagma_DCE_Module):
     def __init__(self, train_x, train_y, likelihood):
         super(DagmaGP_DCE, self).__init__()
         
-        # Initialize the GP model with mean and covariance modules
         self.gp = gpytorch.models.ExactGP(train_x, train_y, likelihood)
         self.gp.mean_module = gpytorch.means.ConstantMean(batch_shape=torch.Size([10]))
         self.gp.covar_module = gpytorch.kernels.ScaleKernel(
-            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([10])),
-            batch_shape=torch.Size([10])
+            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([10]))
         )
+        self.gp.covar_module.base_kernel.lengthscale = 1.0
+
+        # self.gp.covar_module = gpytorch.kernels.ScaleKernel(
+        #     gpytorch.kernels.RBFKernel(batch_shape=torch.Size([10])),
+        #     batch_shape=torch.Size([10])
+        # )
+        # self.gp.covar_module.base_kernel.lengthscale = 1.0  # Or some other positive value
+        # self.gp.covar_module.outputscale = 1.0  # Or some other positive value
+
         n, d = train_x.shape
-        self.d = 100
+        self.d = d
+        self.n = n
         self.I = torch.eye(self.d)
         
 
@@ -348,44 +362,27 @@ class DagmaGP_DCE(Dagma_DCE_Module):
     
     def get_graph(self, x):
         x_dummy = x.detach().requires_grad_()
-        n,d = x_dummy.shape
-        lengthscale = self.gp.covar_module.base_kernel.lengthscale.squeeze()
-        # print(f"lengthscale's shape is: {lengthscale.shape}")
-        # Compute pairwise differences
-        x1 = x_dummy.unsqueeze(1)  # Shape: [n, 1, d]
-        x2 = x_dummy.unsqueeze(0)  # Shape: [1, n, d]
-        # print(f"x1's shape is: {x1.shape}")
-        # print(f"x2's shape is: {x2.shape}")
-        # Compute squared differences scaled by the lengthscale
-        scaled_diff = ((x1 - x2) / lengthscale).pow(2)
+        n, d = x_dummy.shape
+        lengthscale = self.gp.covar_module.base_kernel.lengthscale
 
-        # Sum over the last dimension for squared Euclidean distance
-        squared_dist = scaled_diff.sum(dim=2)
+        
+        x1 = x_dummy.unsqueeze(2)  # Shape: [n, d, 1]
+        x2 = x_dummy.unsqueeze(1)  # Shape: [n, 1, d]
 
-        # RBF kernel matrix
-        rbf_matrix = torch.exp(-0.5 * squared_dist)
+        diff = x1 - x2  # Shape: [n, d, d]
+        scaled_diff = diff.pow(2).sum(dim=-1)
 
-        # Derivative of RBF kernel
-        covar_derivative = (x1 - x2) / lengthscale.pow(2)
-        combined_derivatives = -rbf_matrix.unsqueeze(2) * covar_derivative
-        # print(f"combined_derivatives's shape is: {combined_derivatives.shape}")
+        rbf_matrix = torch.exp(-0.5 * scaled_diff)  # shape: [n, d, d]
+        rbf_derivative = -rbf_matrix.unsqueeze(-1) * (diff)
+        rbf_derivative = rbf_derivative.squeeze(-1)  # shape: [n, d, d]
 
-        squared_derivatives = combined_derivatives.pow(2)
-
-        # Compute the mean across the first two dimensions (1000, 1000)
-        mean_squared_derivatives = squared_derivatives.mean(dim=[0])
-
-        # Compute the square root to get RMS
-        rms_derivatives = mean_squared_derivatives.sqrt()
-        # print(f"rms_derivatives's shape is: {rms_derivatives.shape}")
-        # Reshape if necessary to get a square matrix
-        W = rms_derivatives.reshape(100, 100)
-        print(W)
-        # print(f"Shape of W: {W.shape}")
+        squared_derivatives = rbf_derivative.pow(2)
+        mean_squared_derivatives = squared_derivatives.mean(dim=0)
+        W = mean_squared_derivatives.sqrt()  # Shape: [d, d]
+        # print(f"W is: {W}")
+        return W, rbf_derivative
 
 
-
-        return W, combined_derivatives
 
 
 
