@@ -88,6 +88,9 @@ class DagmaDCE:
             checkpoint (int, optional): how often to checkpoint. Defaults to 1000.
             tol (float, optional): tolerance to terminate learning. Defaults to 1e-3.
         """
+        # print(f"model parameters are:")
+        # for param in self.model.parameters():
+        #     print(param)
         optimizer = optim.Adam(
             self.model.parameters(),
             lr=lr,
@@ -95,6 +98,11 @@ class DagmaDCE:
             weight_decay=mu * lambda2,
         )
 
+        trainable_params = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
+
+        # print(f"total params is: {trainable_params}")
         obj_prev = 1e16
 
         scheduler = optim.lr_scheduler.ExponentialLR(
@@ -107,13 +115,19 @@ class DagmaDCE:
             if i == 0:
                 # X_hat = self.model(self.X)
                 X_hat = self.model(self.X).mean  # Extract mean from MultivariateNormal
-                # print(f"X_hat's shape is: {X_hat.shape}")
                 score = self.loss(X_hat, self.X)
                 obj = score
+                # print("First iteration")
+                # print(f"X_hat is: {X_hat}")
+                # print(f"score is: {score}")
+                # print(f"obj is: {obj}")
 
             else:
                 W_current, observed_derivs = self.model.get_graph(self.X)
-
+                print(f"W_current is: {W_current}")
+                print(f"observed_derivs is: {observed_derivs}")
+                # print(f"shape of W_current is: {W_current.shape}")
+                # print(f"shape of observed_derivs is: {observed_derivs.shape}")
                 h_val = self.model.h_func(W_current, s)
 
                 if h_val.item() < 0:
@@ -126,6 +140,14 @@ class DagmaDCE:
                 l1_reg = lambda1 * self.model.get_l1_reg(observed_derivs)
 
                 obj = mu * (score + l1_reg) + h_val
+                # print(f"mu is: {mu}")
+                # print(f"Is l1_reg nan? {torch.isnan(l1_reg).any().item()}")
+                # print(f"l1_reg is: {l1_reg}")
+                # print(f"h_val is: {h_val}")
+                # print(f"Is h_val nan? {torch.isnan(h_val).any().item()}")
+                # print(f"X_hat is: {X_hat}")
+                # print(f"score is: {score}")
+                # print(f"obj is: {obj}")
 
             obj.backward()
             optimizer.step()
@@ -209,6 +231,7 @@ class DagmaDCE:
                             break  # lr is too small
 
                     mu *= mu_factor
+                    print(f"Success is {success}")
 
         return self.model.get_graph(self.X)[0]
 
@@ -291,6 +314,7 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
         # print(f"observed_deriv's shape is: {observed_deriv.shape}")
         # Adjacency matrix is RMS Jacobian
         W = torch.sqrt(torch.mean(observed_deriv**2, axis=0).T)
+        print(f"observed_deriv's shape is: {observed_deriv.shape}")
 
         return W, observed_deriv
 
@@ -305,17 +329,7 @@ class DagmaMLP_DCE(Dagma_DCE_Module):
         Returns:
             torch.Tensor: constraint
         """
-        # print(f"shape of W is: {W.shape}")
-        # print(f"shape of W*W is: {(W*W).shape}")
-        # print(f"shape of self.I is: {self.I.shape}")
-
         h = -torch.slogdet(s * self.I - W * W)[1] + self.d * np.log(s)
-
-        # print(f"type of I is: {type(self.I)}")
-        # print(f"type of W is: {type(W)}")
-        print(f"shape of h is: {h.shape}")
-        print(f"h is: {h}")
-
         return h
 
     def get_l1_reg(self, observed_derivs: torch.Tensor) -> torch.Tensor:
@@ -338,7 +352,7 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         self.gp.covar_module = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.RBFKernel(batch_shape=torch.Size([10]))
         )
-        self.gp.covar_module.base_kernel.lengthscale = 1.0
+        self.gp.covar_module.base_kernel.lengthscale = 10.0
 
         # self.gp.covar_module = gpytorch.kernels.ScaleKernel(
         #     gpytorch.kernels.RBFKernel(batch_shape=torch.Size([10])),
@@ -363,26 +377,67 @@ class DagmaGP_DCE(Dagma_DCE_Module):
     def get_graph(self, x):
         x_dummy = x.detach().requires_grad_()
         n, d = x_dummy.shape
+        
         lengthscale = self.gp.covar_module.base_kernel.lengthscale
-
+        # print(f"lengthscale is: {lengthscale}")
+        lengthscale_rep = lengthscale.repeat(n//d, 1, 1)
+        # print(f"lengthscale_rep is: {lengthscale_rep}")
         
         x1 = x_dummy.unsqueeze(2)  # Shape: [n, d, 1]
         x2 = x_dummy.unsqueeze(1)  # Shape: [n, 1, d]
-
+        # print(f"x1 and x2 are : {x1} and {x2}")
         diff = x1 - x2  # Shape: [n, d, d]
-        scaled_diff = diff.pow(2).sum(dim=-1)
+        # print(f"diff is   : {diff}")
+        scaled_diff = diff.pow(2)
+        # scaled_diff = diff.pow(2).sum(dim=-1)
+        # print(f"scaled_diff is: {scaled_diff}")
+        # scaled_diff = (diff.pow(2) / lengthscale_rep.pow(2)).sum(dim=-1)
 
         rbf_matrix = torch.exp(-0.5 * scaled_diff)  # shape: [n, d, d]
-        rbf_derivative = -rbf_matrix.unsqueeze(-1) * (diff)
-        rbf_derivative = rbf_derivative.squeeze(-1)  # shape: [n, d, d]
+        # print(f"rbf_matrix is: {rbf_matrix}")
+        # rbf_derivative = -rbf_matrix.unsqueeze(-1) * (diff)
+        rbf_derivative = -rbf_matrix * (diff)
+        # rbf_derivative = -rbf_matrix.unsqueeze(-1) * (diff / lengthscale_rep.pow(2))
+        # rbf_derivative = rbf_derivative.squeeze(-1)  # shape: [n, d, d]
 
-        squared_derivatives = rbf_derivative.pow(2)
-        mean_squared_derivatives = squared_derivatives.mean(dim=0)
-        W = mean_squared_derivatives.sqrt()  # Shape: [d, d]
+        # squared_derivatives = rbf_derivative.pow(2)
+        # mean_squared_derivatives = squared_derivatives.mean(dim=0)
+        # W = mean_squared_derivatives.sqrt()  # Shape: [d, d]
+        W = torch.sqrt(torch.mean(rbf_derivative**2, axis=0).T) # Shape: [d, d]
+        # print(f"W's shape is: {W.shape}")
         # print(f"W is: {W}")
         return W, rbf_derivative
 
 
+    # def get_graph(self, x):
+    #     x_dummy = x.detach().requires_grad_()
+    #     n, d = x_dummy.shape
+    #     lengthscale = self.gp.covar_module.base_kernel.lengthscale
+    #     print(f"lengthscale is: {lengthscale}")
+    #     print(f"lengthscale's shape is: {lengthscale.shape}")
+
+    #     # Reshape lengthscale for broadcasting. Assuming lengthscale shape is [1, d, 1] or similar
+    #     lengthscale = lengthscale.view(1, d, 1)
+
+    #     x1 = x_dummy.unsqueeze(2)  # Shape: [n, d, 1]
+    #     x2 = x_dummy.unsqueeze(1)  # Shape: [n, 1, d]
+
+    #     diff = x1 - x2  # Shape: [n, d, d]
+
+    #     # Scale the squared differences by the lengthscale and sum along the last dimension
+    #     scaled_diff = (diff.pow(2) / lengthscale.pow(2)).sum(dim=-1)
+
+    #     rbf_matrix = torch.exp(-0.5 * scaled_diff)  # shape: [n, d, d]
+
+    #     # Compute the derivative of the RBF kernel
+    #     rbf_derivative = -rbf_matrix.unsqueeze(-1) * (diff / lengthscale.pow(2))
+    #     rbf_derivative = rbf_derivative.squeeze(-1)  # shape: [n, d, d]
+
+    #     squared_derivatives = rbf_derivative.pow(2)
+    #     mean_squared_derivatives = squared_derivatives.mean(dim=0)
+    #     W = mean_squared_derivatives.sqrt()  # Shape: [d, d]
+
+    #     return W, rbf_derivative
 
 
 

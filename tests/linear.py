@@ -57,31 +57,17 @@ print(f"B_true shape: {B_true.shape}")
 print('\n>>> Performing DAGMA-DCE discovery <<<')
 # eq_model = nonlinear_dce.DagmaMLP_DCE(dims=[d, 10, 1], bias=True).to(device)
 # eq_model = nonlinear_dce.DagmaGP_DCE(X, B_true, likelihood = gpytorch.likelihoods.GaussianLikelihood()).to(device)
-eq_model = nonlinear_dce.DagmaGP_DCE(X, X, likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=10))
+eq_model = nonlinear_dce.DagmaGP_DCE(X, None, likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=10))
 model = nonlinear_dce.DagmaDCE(eq_model)
 
 time_start = time.time()
 W_est_dce = model.fit(X, lambda1=0, lambda2=5e-3,
                       lr=2e-4, mu_factor=0.1, mu_init=1, T=4, warm_iter=1*5000, max_iter=1*7000)
 time_end = time.time()
-print(f"W_est_dce shape: {W_est_dce.shape}")
-print(f"W_est_dce type: {type(W_est_dce)}")
-print(f"W_est_dce: {W_est_dce}")
-print(f"Mean of W_est_dce: {torch.mean(W_est_dce)}")
-print(f"Max of W_est_dce: {torch.max(W_est_dce)}")
-print(f"Min of W_est_dce: {torch.min(W_est_dce)}")
-print(f"Std of W_est_dce: {torch.std(W_est_dce)}")
-print(f"Median of W_est_dce: {torch.median(W_est_dce)}")
+print(f"Nans in W_est_dce: {torch.isnan(W_est_dce).any().item()}")
 
 W_est_dce_no_thresh = W_est_dce.detach().cpu().numpy()
-print(f"W_est_dce_no_thresh shape: {W_est_dce_no_thresh.shape}")
-print(f"W_est_dce_no_thresh type: {type(W_est_dce_no_thresh)}")
-print(f"W_est_dce_no_thresh: {W_est_dce_no_thresh}")
-print(f"Mean of W_est_dce_no_thresh: {np.mean(W_est_dce_no_thresh)}")
-print(f"Max of W_est_dce_no_thresh: {np.max(W_est_dce_no_thresh)}")
-print(f"Min of W_est_dce_no_thresh: {np.min(W_est_dce_no_thresh)}")
-print(f"Std of W_est_dce_no_thresh: {np.std(W_est_dce_no_thresh)}")
-print(f"Median of W_est_dce_no_thresh: {np.median(W_est_dce_no_thresh)}")
+
 
 W_est_dce = abs(W_est_dce_no_thresh) * \
     (abs(W_est_dce_no_thresh) > 0.3)
@@ -105,6 +91,8 @@ for lambda1 in [1e-3]:
     print(f'\n>>> Performing DAGMA discovery (lambda1 = {lambda1})<<<')
     eq_model = nonlinear.DagmaMLP(
         dims=[d, 10, 1], bias=True, dtype=torch.double).to(device)
+    # eq_model = nonlinear_dce.DagmaGP_DCE(X, None, likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=10))
+
     model = nonlinear.DagmaNonlinear(eq_model, dtype=torch.double)
 
     time_start = time.time()
