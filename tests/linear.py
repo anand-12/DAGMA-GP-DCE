@@ -25,10 +25,12 @@ RESULTS_DIR = ''
 ####### Generate Data #######
 #############################
 print('>>> Generating Data <<<')
-n, d, s0, graph_type, sem_type = 1000, 10, 20, 'ER', 'gauss'
+n, d, s0, graph_type, sem_type = 100, 5, 10, 'ER', 'gauss'
 B_true = utils.simulate_dag(d, s0, graph_type)
 W_true = utils.simulate_parameter(B_true)
 X = utils.simulate_linear_sem(W_true, n, sem_type)
+
+print(W_true)
 
 results_r2_sort_regress = r2_sort_regress(X)
 acc_r2_sort_regress = utils.count_accuracy(
@@ -56,18 +58,16 @@ print(f"B_true shape: {B_true.shape}")
 ######################################
 print('\n>>> Performing DAGMA-DCE discovery <<<')
 # eq_model = nonlinear_dce.DagmaMLP_DCE(dims=[d, 10, 1], bias=True).to(device)
-# eq_model = nonlinear_dce.DagmaGP_DCE(X, B_true, likelihood = gpytorch.likelihoods.GaussianLikelihood()).to(device)
-eq_model = nonlinear_dce.DagmaGP_DCE(X, None, likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=10))
+eq_model = nonlinear_dce.DagmaGP_DCE(train_x=X, num_tasks = 5, lr=0.1, training_iterations=10)
 model = nonlinear_dce.DagmaDCE(eq_model)
 
 time_start = time.time()
-W_est_dce = model.fit(X, lambda1=0, lambda2=5e-3,
-                      lr=2e-4, mu_factor=0.1, mu_init=1, T=4, warm_iter=1*5000, max_iter=1*7000)
+W_est_dce = model.fit(X, lambda1=0.0, lambda2=1e-4,
+                      lr=1e-3, mu_factor=0.1, mu_init=1.0, T=5, warm_iter=1*5000, max_iter=1*7000)
 time_end = time.time()
 print(f"Nans in W_est_dce: {torch.isnan(W_est_dce).any().item()}")
 
 W_est_dce_no_thresh = W_est_dce.detach().cpu().numpy()
-
 
 W_est_dce = abs(W_est_dce_no_thresh) * \
     (abs(W_est_dce_no_thresh) > 0.3)
@@ -75,60 +75,61 @@ acc_dce = utils.count_accuracy(B_true, W_est_dce != 0)
 diff_dce = np.linalg.norm(W_est_dce_no_thresh - abs(W_true))
 sid_dce = SID(B_true, W_est_dce != 0).item()
 
-mse_dce = model.mse_loss(model.model(X), X).detach().cpu().numpy()
+# mse_dce = model.mse_loss(model.model(X), X).detach().cpu().numpy()
+mll_dce = model.mll_loss(model.model(X), X).detach().cpu().numpy()
 
 print('[DAGMA-DCE Results] SHD:', acc_dce['shd'], '| TPR:',
       acc_dce['tpr'], '| Time Elapsed:', time_end-time_start, '| SID:', sid_dce)
 print('[DAGMA-DCE Results] Froebenius Difference from W_true:', diff_dce)
-print('[DAGMA-DCE Results] Mean squared error:', mse_dce)
+print('[DAGMA-DCE Results] Mean squared error:', mll_dce)
 print('[DAGMA-DCE Results] Kendall-Tau:', kendalltau(B_true, W_est_dce))
 
-##################################
-####### Do DAGMA Discovery #######
-##################################
+# ##################################
+# ####### Do DAGMA Discovery #######
+# ##################################
 # for lambda1 in [0, 1e-4, 1e-3, 1e-2, 1e-1]:
-for lambda1 in [1e-3]:
-    print(f'\n>>> Performing DAGMA discovery (lambda1 = {lambda1})<<<')
-    eq_model = nonlinear.DagmaMLP(
-        dims=[d, 10, 1], bias=True, dtype=torch.double).to(device)
-    # eq_model = nonlinear_dce.DagmaGP_DCE(X, None, likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=10))
+# for lambda1 in [1e-3]:
+#     print(f'\n>>> Performing DAGMA discovery (lambda1 = {lambda1})<<<')
+#     eq_model = nonlinear.DagmaMLP(
+#         dims=[d, 10, 1], bias=True, dtype=torch.double).to(device)
+#     # eq_model = nonlinear_dce.DagmaGP_DCE(X, None, likelihood = gpytorch.likelihoods.MultitaskGaussianLikelihood(num_tasks=10))
 
-    model = nonlinear.DagmaNonlinear(eq_model, dtype=torch.double)
+#     model = nonlinear.DagmaNonlinear(eq_model, dtype=torch.double)
 
-    time_start = time.time()
-    W_est_dagma = model.fit(X, lambda1=lambda1, lambda2=5e-3,
-                            T=4, w_threshold=0.0)  # 2e-3 performs favorable to 2e-2
-    time_end = time.time()
+#     time_start = time.time()
+#     W_est_dagma = model.fit(X, lambda1=lambda1, lambda2=5e-3,
+#                             T=4, w_threshold=0.0)  # 2e-3 performs favorable to 2e-2
+#     time_end = time.time()
 
-    W_est_dagma_no_thresh = W_est_dagma
-    W_est_dagma = W_est_dagma * (W_est_dagma > 0.3)
-    acc_dagma = utils.count_accuracy(B_true, W_est_dagma != 0)
-    diff_dagma = np.linalg.norm(W_est_dagma - abs(W_true))
-    sid_dagma = SID(B_true, W_est_dagma != 0).item()
+#     W_est_dagma_no_thresh = W_est_dagma
+#     W_est_dagma = W_est_dagma * (W_est_dagma > 0.3)
+#     acc_dagma = utils.count_accuracy(B_true, W_est_dagma != 0)
+#     diff_dagma = np.linalg.norm(W_est_dagma - abs(W_true))
+#     sid_dagma = SID(B_true, W_est_dagma != 0).item()
 
-    mse_dagma = model.mse_loss(model.model(X), X).detach().cpu().numpy()
+#     mse_dagma = model.mse_loss(model.model(X), X).detach().cpu().numpy()
 
-    print('[DAGMA Results] SHD:', acc_dagma['shd'], '| TPR:',
-          acc_dagma['tpr'], '| Time Elapsed:', time_end-time_start, '| SID:', sid_dagma, '| F1:', acc_dagma['f1'])
-    print('[DAGMA Results] Froebenius Difference from W_true:', diff_dagma)
-    print('[DAGMA Results] Mean squared error:', mse_dagma)
-    print('[DAGMA Results] Kendall-Tau:', kendalltau(B_true, W_est_dagma))
+#     print('[DAGMA Results] SHD:', acc_dagma['shd'], '| TPR:',
+#           acc_dagma['tpr'], '| Time Elapsed:', time_end-time_start, '| SID:', sid_dagma, '| F1:', acc_dagma['f1'])
+#     print('[DAGMA Results] Froebenius Difference from W_true:', diff_dagma)
+#     print('[DAGMA Results] Mean squared error:', mse_dagma)
+#     print('[DAGMA Results] Kendall-Tau:', kendalltau(B_true, W_est_dagma))
 
-    # We can compare with DAGMA results by reestimating the graph under the DAGMA-DCE
-    # definition post-hoc. But this gives no guarantees about the constraint
-    if reestimate_graph:
-        W_est_dagma_no_thresh = eq_model.get_graph(X)[0].detach().cpu().numpy()
-        W_est_dagma = W_est_dagma * (W_est_dagma_no_thresh > 0.3)
-        acc_dagma = utils.count_accuracy(B_true, W_est_dagma != 0)
-        diff_dagma = np.linalg.norm(W_est_dagma - abs(W_true))
-        sid_dagma = SID(B_true, W_est_dagma != 0).item()
+#     # We can compare with DAGMA results by reestimating the graph under the DAGMA-DCE
+#     # definition post-hoc. But this gives no guarantees about the constraint
+#     if reestimate_graph:
+#         W_est_dagma_no_thresh = eq_model.get_graph(X)[0].detach().cpu().numpy()
+#         W_est_dagma = W_est_dagma * (W_est_dagma_no_thresh > 0.3)
+#         acc_dagma = utils.count_accuracy(B_true, W_est_dagma != 0)
+#         diff_dagma = np.linalg.norm(W_est_dagma - abs(W_true))
+#         sid_dagma = SID(B_true, W_est_dagma != 0).item()
 
-        mse_dagma = model.mse_loss(model.model(X), X).detach().cpu().numpy()
+#         mse_dagma = model.mse_loss(model.model(X), X).detach().cpu().numpy()
 
-        print('[DAGMA Results] SHD:', acc_dagma['shd'], '| TPR:',
-              acc_dagma['tpr'], '| Time Elapsed:', time_end-time_start, '| SID:', sid_dagma)
-        print('[DAGMA Results] Froebenius Difference from W_true:', diff_dagma)
-        print('[DAGMA Results] Mean squared error:', mse_dagma)
+#         print('[DAGMA Results] SHD:', acc_dagma['shd'], '| TPR:',
+#               acc_dagma['tpr'], '| Time Elapsed:', time_end-time_start, '| SID:', sid_dagma)
+#         print('[DAGMA Results] Froebenius Difference from W_true:', diff_dagma)
+#         print('[DAGMA Results] Mean squared error:', mse_dagma)
 
 
 ############################
@@ -161,35 +162,35 @@ for i in range(d):
 plt.tight_layout()
 plt.savefig(RESULTS_DIR + 'linear_diff_dce.pdf')
 
-offset = 0.48
-plt.figure(figsize=(3.5, 3.25))
-plt.matshow(W_est_dagma_no_thresh - abs(W_true),
-            cmap='bwr', vmin=-1, vmax=1, fignum=0)
+# offset = 0.48
+# plt.figure(figsize=(3.5, 3.25))
+# plt.matshow(W_est_dagma_no_thresh - abs(W_true),
+#             cmap='bwr', vmin=-1, vmax=1, fignum=0)
 
-for i in range(d):
-    for j in range(d):
-        plt.plot([i-offset, i+offset], [j-offset, j-offset],
-                 alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
-        plt.plot([i-offset, i+offset], [j+offset, j+offset],
-                 alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
-        plt.plot([i-offset, i-offset], [j-offset, j+offset],
-                 alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
-        plt.plot([i+offset, i+offset], [j-offset, j+offset],
-                 alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
+# for i in range(d):
+#     for j in range(d):
+#         plt.plot([i-offset, i+offset], [j-offset, j-offset],
+#                  alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
+#         plt.plot([i-offset, i+offset], [j+offset, j+offset],
+#                  alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
+#         plt.plot([i-offset, i-offset], [j-offset, j+offset],
+#                  alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
+#         plt.plot([i+offset, i+offset], [j-offset, j+offset],
+#                  alpha=abs(W_true[j, i]) / np.max(abs(W_true)), color='black', linewidth=2)
 
 
-plt.title('Difference in Estimated \nWeighted Graph with DAGMA')
-plt.xticks([])
-plt.yticks([])
-plt.colorbar()
-plt.tight_layout()
-plt.savefig(RESULTS_DIR + 'linear_diff_dagma.pdf')
+# plt.title('Difference in Estimated \nWeighted Graph with DAGMA')
+# plt.xticks([])
+# plt.yticks([])
+# plt.colorbar()
+# plt.tight_layout()
+# plt.savefig(RESULTS_DIR + 'linear_diff_dagma.pdf')
 
-plt.figure(figsize=(3.5, 3.25))
-plt.matshow(abs(W_true), cmap='Greys', vmin=0, vmax=2, fignum=0)
+# plt.figure(figsize=(3.5, 3.25))
+# plt.matshow(abs(W_true), cmap='Greys', vmin=0, vmax=2, fignum=0)
 
-plt.title(r'True Graph $W_\mathrm{true}$')
-plt.xticks([])
-plt.yticks([])
-plt.colorbar()
-plt.savefig(RESULTS_DIR + 'linear_true_graph.pdf')
+# plt.title(r'True Graph $W_\mathrm{true}$')
+# plt.xticks([])
+# plt.yticks([])
+# plt.colorbar()
+# plt.savefig(RESULTS_DIR + 'linear_true_graph.pdf')
