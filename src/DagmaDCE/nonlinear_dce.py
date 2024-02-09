@@ -40,7 +40,7 @@ class DagmaDCE:
                 Defaults to True.
         """
         self.model = model
-        # self.loss = self.mse_loss if use_mse_loss else self.log_mse_loss
+        self.loss = self.mse_loss if use_mse_loss else self.log_mse_loss
         self.loss = self.mll_loss if use_mse_loss else self.log_mse_loss
 
     def mll_loss(self, output, target):
@@ -51,17 +51,18 @@ class DagmaDCE:
         # print(f"type of output is: {output}")
         # print(f"type of batched_model.train_targets is: {batched_model.train_targets}")
         loss = -mll(output, batched_model.train_targets)
-        print(f"loss is: {loss}")
+        #print(f"loss is: {loss}")
         return loss
 
     def mse_loss(self, output: torch.Tensor, target: torch.Tensor):
         """Computes the MSE loss sum (output - target)^2 / (2N)"""
         n, d = target.shape
-        if isinstance(output, torch.distributions.MultivariateNormal):
-            output_mean = output.mean
-        else:
-            output_mean = output
-        return 0.5 / n * torch.sum((output_mean - target) ** 2)
+        # if isinstance(output, torch.distributions.MultivariateNormal):
+        #     output_mean = output.mean
+        # else:
+        #     output_mean = output
+        print(f"MSE loss is {0.5 / n * torch.sum((output - target) ** 2)}")
+        return 0.5 / n * torch.sum((output - target) ** 2)
 
 
     def log_mse_loss(self, output: torch.Tensor, target: torch.Tensor):
@@ -159,6 +160,7 @@ class DagmaDCE:
                 obj = mu * (score + l1_reg) + h_val
 
                 if (i % 500 == 0):
+                    print('Objective:', obj, 'mu:', mu, 'score:', score, 'l1_reg:', l1_reg, 'h_val:', h_val)
                     print(W_current, observed_derivs)
 
             obj.backward()
@@ -385,10 +387,16 @@ class DagmaGP_DCE(Dagma_DCE_Module):
         self.model_list = gpytorch.models.IndependentModelList(*self.models)
         self.likelihood_list = gpytorch.likelihoods.LikelihoodList(*self.likelihoods)
 
+        self.model_list.train()
+        self.likelihood_list.train()
+
     def forward(self, x):
 
-        for model in self.model_list.models:
-            model.eval()
+        # for model in self.model_list.models:
+        #     model.eval()
+
+        self.model_list.train()
+        self.likelihood_list.train()
 
         predictive_means = []
         predictive_variances = []
@@ -415,30 +423,53 @@ class DagmaGP_DCE(Dagma_DCE_Module):
     #         print('Iter %d/%d - Loss: %.3f' % (i + 1, self.training_iterations, loss.item()))
 
     def get_graph(self, x):
-        for model in self.model_list.models:
-            model.eval()
+        # for model in self.model_list.models:
+        #     model.eval()
 
+        # self.model_list.eval()
+        # self.likelihood_list.eval()
+
+        x_full = x.detach().requires_grad_(True)
         derivative = torch.zeros(len(x), self.num_tasks, self.d)
 
-        batch_size = 1024
-        num_batches = int(math.ceil(len(x) / batch_size))
-
-        for batch_idx in range(num_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min(start_idx + batch_size, len(x))
-            x_batch = x[start_idx:end_idx].detach().requires_grad_(True)
-
-            for j, model in enumerate(self.model_list.models):
-                model.zero_grad()
-                observed_pred = self.likelihoods[j](model(x_batch))
-                mean = observed_pred.mean
-                grad_outputs = torch.ones(mean.shape)
-                gradients = torch.autograd.grad(outputs=mean, inputs=x_batch, grad_outputs=grad_outputs, create_graph=True)[0]
-                derivative[start_idx:end_idx, j] = gradients
+        for j, model in enumerate(self.model_list.models):
+            model.zero_grad()
+            observed_pred = self.likelihoods[j](model(x_full))
+            mean = observed_pred.mean
+            grad_outputs = torch.ones(mean.shape)
+            gradients = torch.autograd.grad(outputs=mean.sum(), inputs=x_full)[0]
+            derivative[:, j] = gradients
 
         mean_squared_jacobians = torch.mean(derivative ** 2, dim=0)
         W = torch.sqrt(mean_squared_jacobians)
         return W, derivative
+
+
+    # def get_graph(self, x):
+    #     for model in self.model_list.models:
+    #         model.eval()
+
+    #     derivative = torch.zeros(len(x), self.num_tasks, self.d)
+
+    #     batch_size = 1024
+    #     num_batches = int(math.ceil(len(x) / batch_size))
+
+    #     for batch_idx in range(num_batches):
+    #         start_idx = batch_idx * batch_size
+    #         end_idx = min(start_idx + batch_size, len(x))
+    #         x_batch = x[start_idx:end_idx].detach().requires_grad_(True)
+
+    #         for j, model in enumerate(self.model_list.models):
+    #             model.zero_grad()
+    #             observed_pred = self.likelihoods[j](model(x_batch))
+    #             mean = observed_pred.mean
+    #             grad_outputs = torch.ones(mean.shape)
+    #             gradients = torch.autograd.grad(outputs=mean, inputs=x_batch, grad_outputs=grad_outputs, create_graph=True)[0]
+    #             derivative[start_idx:end_idx, j] = gradients
+
+    #     mean_squared_jacobians = torch.mean(derivative ** 2, dim=0)
+    #     W = torch.sqrt(mean_squared_jacobians)
+    #     return W, derivative
 
     # def get_graph(self, x):
     #     """

@@ -62,8 +62,8 @@ eq_model = nonlinear_dce.DagmaGP_DCE(train_x=X, num_tasks = 5, lr=0.1, training_
 model = nonlinear_dce.DagmaDCE(eq_model)
 
 time_start = time.time()
-W_est_dce = model.fit(X, lambda1=0.0, lambda2=1e-4,
-                      lr=1e-3, mu_factor=0.1, mu_init=1.0, T=5, warm_iter=1*5000, max_iter=1*7000)
+W_est_dce = model.fit(X, lambda1=0.0, lambda2=1e-1,
+                      lr=1e-2, mu_factor=0.1, mu_init=0.1, T=5, warm_iter=2000, max_iter=3000)
 time_end = time.time()
 print(f"Nans in W_est_dce: {torch.isnan(W_est_dce).any().item()}")
 
